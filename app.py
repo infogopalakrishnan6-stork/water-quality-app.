@@ -10,7 +10,7 @@ from wqchartpy import (gibbs, triangle_piper, rectangle_piper, durvo,
 # 1. Config & BIS Standards
 st.set_page_config(page_title="Professional Water Suitability Suite", layout="wide")
 
-# BIS standards and weights from provided documentation
+# Updated BIS standards and weights to include NO3 and F
 BIS_LIMITS = {
     "pH": 8.5, "SO4": 200, "NO3": 45, "F": 1.5, "Cl": 250, 
     "TDS": 500, "Na": 100, "Ca": 75, "Mg": 30, "K": 10, "HCO3": 200
@@ -47,15 +47,17 @@ def process_data(df):
             df[f"{ion}_meq"] = df[ion] / ew
             
     # Irrigation Indices
-    df["SAR"] = df["Na_meq"] / np.sqrt((df["Ca_meq"] + df["Mg_meq"]) / 2)
-    df["Na_percent"] = (df["Na_meq"] + df["K_meq"]) / (df["Ca_meq"] + df["Mg_meq"] + df["Na_meq"] + df["K_meq"]) * 100
-    df["RSC"] = (df.get("HCO3_meq", 0) + df.get("CO3_meq", 0)) - (df["Ca_meq"] + df["Mg_meq"])
-    df["Kelly_Ratio"] = df["Na_meq"] / (df["Ca_meq"] + df["Mg_meq"])
-    df["Mag_Hazard"] = (df["Mg_meq"] / (df["Ca_meq"] + df["Mg_meq"])) * 100
+    # Note: SAR and others require Ca, Mg, Na in meq/L
+    if all(col in df.columns for col in ["Na_meq", "Ca_meq", "Mg_meq"]):
+        df["SAR"] = df["Na_meq"] / np.sqrt((df["Ca_meq"] + df["Mg_meq"]) / 2)
+        df["Na_percent"] = (df["Na_meq"] + df.get("K_meq", 0)) / (df["Ca_meq"] + df["Mg_meq"] + df["Na_meq"] + df.get("K_meq", 0)) * 100
+        df["RSC"] = (df.get("HCO3_meq", 0) + df.get("CO3_meq", 0)) - (df["Ca_meq"] + df["Mg_meq"])
+        df["Kelly_Ratio"] = df["Na_meq"] / (df["Ca_meq"] + df["Mg_meq"])
+        df["Mag_Hazard"] = (df["Mg_meq"] / (df["Ca_meq"] + df["Mg_meq"])) * 100
     
     # Internal Binary check for Statistics
     df['is_drinking_safe'] = df['WQI_Value'] <= 50
-    df['is_irrigation_safe'] = (df['SAR'] < 18) & (df['RSC'] < 1.25) & (df['Kelly_Ratio'] < 1)
+    df['is_irrigation_safe'] = (df.get('SAR', 0) < 18) & (df.get('RSC', 0) < 1.25) & (df.get('Kelly_Ratio', 0) < 1)
     
     return df
 
@@ -74,6 +76,7 @@ input_mode = st.sidebar.radio("Input Method:", ["Manual Entry", "Batch Analysis 
 if input_mode == "Manual Entry":
     st.sidebar.subheader("Chemical Parameters (mg/L)")
     params = {}
+    # Dynamically generate inputs for all BIS parameters including NO3 and F
     for p in BIS_LIMITS.keys():
         params[p] = st.sidebar.number_input(p, value=float(BIS_LIMITS[p]))
     data = {"Sample_ID": ["Manual_Sample"], **{k: [v] for k, v in params.items()}, "CO3": [0]}
@@ -121,15 +124,14 @@ with tab1:
     with col2:
         st.subheader("🌾 Irrigation Suitability")
         i_col1, i_col2 = st.columns(2)
-        i_col1.metric("SAR Index", f"{current_row['SAR']:.2f}")
-        i_col1.metric("Kelly Ratio", f"{current_row['Kelly_Ratio']:.2f}")
-        i_col2.metric("Na %", f"{current_row['Na_percent']:.1f}%")
-        i_col2.metric("RSC Index", f"{current_row['RSC']:.2f}")
-        st.metric("Magnesium Hazard", f"{current_row['Mag_Hazard']:.1f}%")
+        i_col1.metric("SAR Index", f"{current_row.get('SAR', 0):.2f}")
+        i_col1.metric("Kelly Ratio", f"{current_row.get('Kelly_Ratio', 0):.2f}")
+        i_col2.metric("Na %", f"{current_row.get('Na_percent', 0):.1f}%")
+        i_col2.metric("RSC Index", f"{current_row.get('RSC', 0):.2f}")
+        st.metric("Magnesium Hazard", f"{current_row.get('Mag_Hazard', 0):.1f}%")
     
     st.divider()
     
-    # 📖 Comprehensive Interpretation Guide based on provided images
     with st.expander("📖 Scientific Interpretation Guide (How to read these results)"):
         st.markdown("""
         ### **1. Drinking Quality (WQI)**
@@ -143,7 +145,7 @@ with tab1:
         - **SAR (Sodium Adsorption Ratio)**: Excellent (<10), Good (10-18), Doubtful (18-26), Unfit (>26).
         - **Na % (Percentage Sodium)**: Excellent (<20%), Good (20-40%), Permissible (40-60%), Doubtful (60-80%), Unfit (>80%).
         - **RSC (Residual Sodium Carbonate)**: Good (<1.25), Doubtful (1.25-2.5), Unfit (>2.5).
-        - **Kelly Ratio**: Ratio of Sodium to Calcium/Magnesium. Target: **< 1.0**. Values **> 1.0** indicate sodium excess.
+        - **Kelly Ratio**: Target: **< 1.0**. Values **> 1.0** indicate sodium excess.
         - **Magnesium Hazard**: Suitable (<50%), Unsuitable (>50%).
         """)
 
