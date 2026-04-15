@@ -7,10 +7,10 @@ import io
 from wqchartpy import (gibbs, triangle_piper, rectangle_piper, durvo, 
                        hfed, stiff, chadha, gaillardet, schoeller, chernoff)
 
-# 1. Config & Standards (BIS Integration)
+# 1. Config & BIS Standards
 st.set_page_config(page_title="Professional Water Suitability Suite", layout="wide")
 
-# Internal BIS Standards & Weights
+# BIS standards and weights from provided documentation
 BIS_LIMITS = {
     "pH": 8.5, "SO4": 200, "NO3": 45, "F": 1.5, "Cl": 250, 
     "TDS": 500, "Na": 100, "Ca": 75, "Mg": 30, "K": 10, "HCO3": 200
@@ -23,7 +23,7 @@ EQ_WT = {"Ca": 20.04, "Mg": 12.15, "Na": 23, "K": 39.1, "HCO3": 61, "CO3": 30}
 
 # 2. Advanced Logic Functions
 def process_data(df):
-    potential_names = ['Sample', 'sample', 'SAMPLE', 'Sample No', 'Sample No.', 'Sample no']
+    potential_names = ['Sample', 'sample', 'SAMPLE', 'Sample No', 'Sample No.', 'Sample no', 'SAMP']
     found_name = next((name for name in potential_names if name in df.columns), df.columns[0])
     df = df.rename(columns={found_name: 'Sample_ID'})
 
@@ -44,28 +44,27 @@ def process_data(df):
     # meq/L Conversions
     for ion, ew in EQ_WT.items():
         if ion in df.columns:
-            df[f"{ion}_meq"] = df[ion]/ew
+            df[f"{ion}_meq"] = df[ion] / ew
             
-    # Comprehensive Irrigation Indices
-    df["SAR"] = df["Na_meq"]/np.sqrt((df["Ca_meq"] + df["Mg_meq"])/2)
-    df["Na_percent"] = (df["Na_meq"]+df["K_meq"]) / (df["Ca_meq"]+df["Mg_meq"]+df["Na_meq"]+df["K_meq"]) * 100
+    # Irrigation Indices
+    df["SAR"] = df["Na_meq"] / np.sqrt((df["Ca_meq"] + df["Mg_meq"]) / 2)
+    df["Na_percent"] = (df["Na_meq"] + df["K_meq"]) / (df["Ca_meq"] + df["Mg_meq"] + df["Na_meq"] + df["K_meq"]) * 100
     df["RSC"] = (df.get("HCO3_meq", 0) + df.get("CO3_meq", 0)) - (df["Ca_meq"] + df["Mg_meq"])
     df["Kelly_Ratio"] = df["Na_meq"] / (df["Ca_meq"] + df["Mg_meq"])
     df["Mag_Hazard"] = (df["Mg_meq"] / (df["Ca_meq"] + df["Mg_meq"])) * 100
     
-    # Internal Binary check for Stats (Using WQI < 50 as 'Good/Excellent')
+    # Internal Binary check for Statistics
     df['is_drinking_safe'] = df['WQI_Value'] <= 50
-    df['is_irrigation_safe'] = (df['SAR'] < 18) & (df['RSC'] < 1.25)
+    df['is_irrigation_safe'] = (df['SAR'] < 18) & (df['RSC'] < 1.25) & (df['Kelly_Ratio'] < 1)
     
     return df
 
-# Classification logic based on your images
 def get_classification_report(row):
     val = row['WQI_Value']
     if val <= 25: return "Excellent Quality", "green", "Safe for Drinking and Irrigation"
     elif val <= 50: return "Good Quality", "blue", "Safe for Drinking and Irrigation"
-    elif val <= 75: return "Moderate Quality", "orange", "Treatment needed before drinking"
-    elif val <= 100: return "Poor Quality", "red", "Needs attention for irrigation"
+    elif val <= 75: return "Moderate Quality", "orange", "Irrigation and treatment needed"
+    elif val <= 100: return "Poor Quality", "red", "Attention needed for irrigation"
     else: return "Very Poor Quality", "darkred", "Unfit for all uses"
 
 # 3. Sidebar UI
@@ -88,7 +87,7 @@ else:
         sample_choice = st.sidebar.selectbox("🔎 Select Sample to View:", df['Sample_ID'].tolist())
         selected_idx = df[df['Sample_ID'] == sample_choice].index[0]
     else:
-        st.info("Please upload a CSV file to view statistics and specific results.")
+        st.info("Please upload a CSV file to begin.")
         st.stop()
 
 # 4. Main Dashboard Header
@@ -126,10 +125,11 @@ with tab1:
         i_col1.metric("Kelly Ratio", f"{current_row['Kelly_Ratio']:.2f}")
         i_col2.metric("Na %", f"{current_row['Na_percent']:.1f}%")
         i_col2.metric("RSC Index", f"{current_row['RSC']:.2f}")
+        st.metric("Magnesium Hazard", f"{current_row['Mag_Hazard']:.1f}%")
     
     st.divider()
     
-    # 📖 User Guide for Interpretation (Using your classification images)
+    # 📖 Comprehensive Interpretation Guide based on provided images
     with st.expander("📖 Scientific Interpretation Guide (How to read these results)"):
         st.markdown("""
         ### **1. Drinking Quality (WQI)**
@@ -140,9 +140,10 @@ with tab1:
         - **> 100**: Very Poor Quality. Unfit for all uses.
         
         ### **2. Irrigation Indices**
-        - **SAR**: Excellent (<10), Good (10-18), Doubtful (18-26), Unfit (>26).
-        - **Na %**: Excellent (<20%), Good (20-40%), Permissible (40-60%), Doubtful (60-80%), Unfit (>80%).
-        - **RSC**: Safe (<1.25), Doubtful (1.25-2.5), Unfit (>2.5).
+        - **SAR (Sodium Adsorption Ratio)**: Excellent (<10), Good (10-18), Doubtful (18-26), Unfit (>26).
+        - **Na % (Percentage Sodium)**: Excellent (<20%), Good (20-40%), Permissible (40-60%), Doubtful (60-80%), Unfit (>80%).
+        - **RSC (Residual Sodium Carbonate)**: Good (<1.25), Doubtful (1.25-2.5), Unfit (>2.5).
+        - **Kelly Ratio**: Ratio of Sodium to Calcium/Magnesium. Target: **< 1.0**. Values **> 1.0** indicate sodium excess.
         - **Magnesium Hazard**: Suitable (<50%), Unsuitable (>50%).
         """)
 
