@@ -10,20 +10,20 @@ from wqchartpy import (gibbs, triangle_piper, rectangle_piper, durvo,
 # 1. Config & BIS Standards
 st.set_page_config(page_title="Professional Water Suitability Suite", layout="wide")
 
-# Updated BIS standards and weights to include NO3 and F
+# BIS standards and weights including Nitrate and Fluoride
 BIS_LIMITS = {
     "pH": 8.5, "SO4": 200, "NO3": 45, "F": 1.5, "Cl": 250, 
     "TDS": 500, "Na": 100, "Ca": 75, "Mg": 30, "K": 10, "HCO3": 200
 }
 BIS_WEIGHTS = {
-    "pH": 4, "SO4": 4, "NO3": 5, "F": 5, "Cl": 5, 
+    "pH": 4, "SO4": 5, "NO3": 5, "F": 5, "Cl": 5, 
     "TDS": 5, "Na": 4, "Ca": 3, "Mg": 3, "K": 2, "HCO3": 1
 }
 EQ_WT = {"Ca": 20.04, "Mg": 12.15, "Na": 23, "K": 39.1, "HCO3": 61, "CO3": 30}
 
 # 2. Advanced Logic Functions
 def process_data(df):
-    potential_names = ['Sample', 'sample', 'SAMPLE', 'Sample No', 'Sample No.', 'Sample no', 'SAMP']
+    potential_names = ['Sample', 'sample', 'SAMPLE', 'Sample No', 'Sample No.', 'Sample no', 'SAMP', 'Sample_ID']
     found_name = next((name for name in potential_names if name in df.columns), df.columns[0])
     df = df.rename(columns={found_name: 'Sample_ID'})
 
@@ -41,13 +41,12 @@ def process_data(df):
 
     df["WQI_Value"] = df.apply(calc_wqi, axis=1)
     
-    # meq/L Conversions
+    # meq/L Conversions for Irrigation Indices
     for ion, ew in EQ_WT.items():
         if ion in df.columns:
             df[f"{ion}_meq"] = df[ion] / ew
             
     # Irrigation Indices
-    # Note: SAR and others require Ca, Mg, Na in meq/L
     if all(col in df.columns for col in ["Na_meq", "Ca_meq", "Mg_meq"]):
         df["SAR"] = df["Na_meq"] / np.sqrt((df["Ca_meq"] + df["Mg_meq"]) / 2)
         df["Na_percent"] = (df["Na_meq"] + df.get("K_meq", 0)) / (df["Ca_meq"] + df["Mg_meq"] + df["Na_meq"] + df.get("K_meq", 0)) * 100
@@ -76,7 +75,6 @@ input_mode = st.sidebar.radio("Input Method:", ["Manual Entry", "Batch Analysis 
 if input_mode == "Manual Entry":
     st.sidebar.subheader("Chemical Parameters (mg/L)")
     params = {}
-    # Dynamically generate inputs for all BIS parameters including NO3 and F
     for p in BIS_LIMITS.keys():
         params[p] = st.sidebar.number_input(p, value=float(BIS_LIMITS[p]))
     data = {"Sample_ID": ["Manual_Sample"], **{k: [v] for k, v in params.items()}, "CO3": [0]}
@@ -85,10 +83,14 @@ if input_mode == "Manual Entry":
 else:
     uploaded_file = st.sidebar.file_uploader("Upload CSV File", type="csv")
     if uploaded_file is not None:
-        df = process_data(pd.read_csv(uploaded_file))
-        st.sidebar.divider()
-        sample_choice = st.sidebar.selectbox("🔎 Select Sample to View:", df['Sample_ID'].tolist())
-        selected_idx = df[df['Sample_ID'] == sample_choice].index[0]
+        try:
+            df = process_data(pd.read_csv(uploaded_file))
+            st.sidebar.divider()
+            sample_choice = st.sidebar.selectbox("🔎 Select Sample to View:", df['Sample_ID'].tolist())
+            selected_idx = df[df['Sample_ID'] == sample_choice].index[0]
+        except Exception as e:
+            st.error(f"Error processing file: {e}")
+            st.stop()
     else:
         st.info("Please upload a CSV file to begin.")
         st.stop()
@@ -99,6 +101,7 @@ st.markdown("<h1 style='text-align: center; font-weight: 900;'>🌊 WATER QUALIT
 if input_mode == "Batch Analysis (Upload CSV)":
     total = len(df)
     m1, m2, m3 = st.columns(3)
+    # These metrics represent independent suitability checks
     m1.metric("Safe for Both", f"{(len(df[df['is_drinking_safe'] & df['is_irrigation_safe']]) / total) * 100:.1f}%")
     m2.metric("Safe for Drinking", f"{(len(df[df['is_drinking_safe']]) / total) * 100:.1f}%")
     m3.metric("Safe for Irrigation", f"{(len(df[df['is_irrigation_safe']]) / total) * 100:.1f}%")
