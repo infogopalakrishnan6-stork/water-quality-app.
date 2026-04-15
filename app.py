@@ -7,25 +7,39 @@ import io
 from wqchartpy import (gibbs, triangle_piper, rectangle_piper, durvo, 
                        hfed, stiff, chadha, gaillardet, schoeller, chernoff)
 
-# 1. Config & Standards
+# 1. Config & Standards (BIS Integration)
 st.set_page_config(page_title="Professional Water Suitability Suite", layout="wide")
 
-WHO_STD = {"pH":8.5, "Ca":75, "Mg":50, "Na":200, "K":12, "HCO3":300, "Cl":250, "SO4":250, "TDS":500}
-WEIGHTS = {"pH":4, "Ca":2, "Mg":2, "Na":3, "K":1, "HCO3":2, "Cl":3, "SO4":3, "TDS":4}
-EQ_WT = {"Ca":20.04, "Mg":12.15, "Na":23, "K":39.1, "HCO3":61, "CO3":30}
+# Internal BIS Standards & Weights
+BIS_LIMITS = {
+    "pH": 8.5, "SO4": 200, "NO3": 45, "F": 1.5, "Cl": 250, 
+    "TDS": 500, "Na": 100, "Ca": 75, "Mg": 30, "K": 10, "HCO3": 200
+}
+BIS_WEIGHTS = {
+    "pH": 4, "SO4": 5, "NO3": 5, "F": 5, "Cl": 5, 
+    "TDS": 5, "Na": 4, "Ca": 3, "Mg": 3, "K": 2, "HCO3": 1
+}
+EQ_WT = {"Ca": 20.04, "Mg": 12.15, "Na": 23, "K": 39.1, "HCO3": 61, "CO3": 30}
 
 # 2. Advanced Logic Functions
 def process_data(df):
-    # Flexible header detection for 'Sample'
     potential_names = ['Sample', 'sample', 'SAMPLE', 'Sample No', 'Sample No.', 'Sample no']
     found_name = next((name for name in potential_names if name in df.columns), df.columns[0])
     df = df.rename(columns={found_name: 'Sample_ID'})
 
-    total_wt = sum(WEIGHTS.values())
-    rel_wt = {k: v/total_wt for k, v in WEIGHTS.items()}
+    total_wi = sum(BIS_WEIGHTS.values())
     
-    # Drinking WQI
-    df["WQI_Drinking"] = df.apply(lambda row: sum((row.get(p, 0)/WHO_STD[p]*100)*rel_wt[p] for p in WHO_STD if p in row), axis=1)
+    # Drinking WQI Calculation
+    def calc_wqi(row):
+        wqi_sum = 0
+        for p, limit in BIS_LIMITS.items():
+            if p in row and not pd.isna(row[p]):
+                qi = (row[p] / limit) * 100
+                Wi = BIS_WEIGHTS[p] / total_wi
+                wqi_sum += qi * Wi
+        return wqi_sum
+
+    df["WQI_Value"] = df.apply(calc_wqi, axis=1)
     
     # meq/L Conversions
     for ion, ew in EQ_WT.items():
@@ -37,19 +51,22 @@ def process_data(df):
     df["Na_percent"] = (df["Na_meq"]+df["K_meq"]) / (df["Ca_meq"]+df["Mg_meq"]+df["Na_meq"]+df["K_meq"]) * 100
     df["RSC"] = (df.get("HCO3_meq", 0) + df.get("CO3_meq", 0)) - (df["Ca_meq"] + df["Mg_meq"])
     df["Kelly_Ratio"] = df["Na_meq"] / (df["Ca_meq"] + df["Mg_meq"])
+    df["Mag_Hazard"] = (df["Mg_meq"] / (df["Ca_meq"] + df["Mg_meq"])) * 100
     
-    # Binary Status for Statistics
-    df['is_drinking_safe'] = df['WQI_Drinking'] <= 100
-    # Safe irrigation criteria: SAR < 18, RSC < 1.25, Kelly < 1
-    df['is_irrigation_safe'] = (df['SAR'] < 18) & (df['RSC'] < 1.25) & (df['Kelly_Ratio'] < 1)
+    # Internal Binary check for Stats (Using WQI < 50 as 'Good/Excellent')
+    df['is_drinking_safe'] = df['WQI_Value'] <= 50
+    df['is_irrigation_safe'] = (df['SAR'] < 18) & (df['RSC'] < 1.25)
+    
     return df
 
-def get_suitability_report(row):
-    d_safe, i_safe = row['is_drinking_safe'], row['is_irrigation_safe']
-    if d_safe and i_safe: return "✅ Highly Suitable: Safe for All Uses", "green"
-    elif d_safe: return "⚠️ Suitable for Drinking Only", "blue"
-    elif i_safe: return "🚜 Suitable for Irrigation Only", "orange"
-    else: return "🚨 Not Suitable: Unsafe for Human or Agricultural use", "red"
+# Classification logic based on your images
+def get_classification_report(row):
+    val = row['WQI_Value']
+    if val <= 25: return "Excellent Quality", "green", "Safe for Drinking and Irrigation"
+    elif val <= 50: return "Good Quality", "blue", "Safe for Drinking and Irrigation"
+    elif val <= 75: return "Moderate Quality", "orange", "Treatment needed before drinking"
+    elif val <= 100: return "Poor Quality", "red", "Needs attention for irrigation"
+    else: return "Very Poor Quality", "darkred", "Unfit for all uses"
 
 # 3. Sidebar UI
 st.sidebar.title("🎛️ Data Management")
@@ -58,8 +75,8 @@ input_mode = st.sidebar.radio("Input Method:", ["Manual Entry", "Batch Analysis 
 if input_mode == "Manual Entry":
     st.sidebar.subheader("Chemical Parameters (mg/L)")
     params = {}
-    for p in ["pH", "TDS", "Ca", "Mg", "Na", "K", "HCO3", "Cl", "SO4"]:
-        params[p] = st.sidebar.number_input(p, value=7.0 if p == "pH" else 10.0)
+    for p in BIS_LIMITS.keys():
+        params[p] = st.sidebar.number_input(p, value=float(BIS_LIMITS[p]))
     data = {"Sample_ID": ["Manual_Sample"], **{k: [v] for k, v in params.items()}, "CO3": [0]}
     df = process_data(pd.DataFrame(data))
     selected_idx = 0
@@ -87,22 +104,20 @@ if input_mode == "Batch Analysis (Upload CSV)":
 
 # 5. Result Display
 current_row = df.iloc[selected_idx]
-verdict_text, verdict_color = get_suitability_report(current_row)
+v_text, v_color, v_usage = get_classification_report(current_row)
 
 st.subheader(f"📍 Detailed Analysis: {current_row['Sample_ID']}")
-st.markdown(f"""<div style="background-color:{verdict_color}; padding:20px; border-radius:10px; color:white; font-size:24px; font-weight:bold; text-align:center; margin-bottom:25px;">
-            {verdict_text}</div>""", unsafe_allow_html=True)
+st.markdown(f"""<div style="background-color:{v_color}; padding:20px; border-radius:10px; color:white; font-size:24px; font-weight:bold; text-align:center; margin-bottom:25px;">
+            {v_text} | {v_usage}</div>""", unsafe_allow_html=True)
 
 tab1, tab2, tab3 = st.tabs(["📊 Quality Indices", "📈 Hydrochemical Plots", "📑 Dataset View"])
 
 with tab1:
     col1, col2 = st.columns(2)
-    
     with col1:
         st.subheader("🚰 Drinking Quality")
-        st.metric("Drinking WQI", f"{current_row['WQI_Drinking']:.2f}")
-        status = "✅ SAFE" if current_row['is_drinking_safe'] else "🚨 UNSUITABLE"
-        st.markdown(f"**Overall Status:** {status}")
+        st.metric("Drinking WQI", f"{current_row['WQI_Value']:.2f}")
+        st.markdown(f"**Overall Status:** {v_text}")
         
     with col2:
         st.subheader("🌾 Irrigation Suitability")
@@ -114,30 +129,27 @@ with tab1:
     
     st.divider()
     
-    # 📖 User Guide for Interpretation
+    # 📖 User Guide for Interpretation (Using your classification images)
     with st.expander("📖 Scientific Interpretation Guide (How to read these results)"):
         st.markdown("""
         ### **1. Drinking Quality (WQI)**
-        - **< 50**: Excellent Quality. Safe for direct consumption.
-        - **50 - 100**: Good Quality. Safe for consumption.
-        - **> 100**: Unsuitable for Drinking. High mineral content or imbalance.
+        - **0 - 25**: Excellent Quality. Safe for direct consumption.
+        - **26 - 50**: Good Quality. Safe for consumption.
+        - **51 - 75**: Moderate Quality. Irrigation and treatment needed before drinking.
+        - **76 - 100**: Poor Quality. Need attention for irrigation.
+        - **> 100**: Very Poor Quality. Unfit for all uses.
         
         ### **2. Irrigation Indices**
-        - **SAR (Sodium Adsorption Ratio)**: Measures the sodium hazard to soil. 
-            - *Target:* **< 10** (Excellent). Values **> 26** cause severe soil permeability issues.
-        - **Na % (Sodium Percentage)**: Indicates the proportion of sodium. 
-            - *Target:* **< 60%**. High sodium percentages stunt plant growth.
-        - **RSC (Residual Sodium Carbonate)**: Measures the hazard of bicarbonate/carbonate.
-            - *Target:* **< 1.25** (Safe). **> 2.5** is hazardous to soil and crops.
-        - **Kelly Ratio**: Ratio of Sodium to Calcium/Magnesium.
-            - *Target:* **< 1.0**. Values **> 1.0** indicate sodium excess, making water unsuitable for irrigation.
+        - **SAR**: Excellent (<10), Good (10-18), Doubtful (18-26), Unfit (>26).
+        - **Na %**: Excellent (<20%), Good (20-40%), Permissible (40-60%), Doubtful (60-80%), Unfit (>80%).
+        - **RSC**: Safe (<1.25), Doubtful (1.25-2.5), Unfit (>2.5).
+        - **Magnesium Hazard**: Suitable (<50%), Unsuitable (>50%).
         """)
 
 with tab2:
     plot_option = st.selectbox("Select Diagram Type:", ["Gibbs", "Triangle Piper", "Rectangle Piper", "Durov", "HFE-D", "Stiff", "Chadha", "Gaillardet", "Schoeller", "Chernoff"])
     if st.button("Generate Selected Plot"):
         with contextlib.redirect_stdout(io.StringIO()):
-            # Clean data for plotting
             plot_df = df.copy().rename(columns={'Sample_ID': 'Sample'})
             for col, val in [("Color","blue"), ("Marker","o"), ("Size",50), ("Alpha",0.8), ("Label","Site")]:
                 if col not in plot_df.columns: plot_df[col] = val
